@@ -5,11 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Twins Daily Log</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <meta name="theme-color" content="#111111">
+    <style>
+      @media print { .no-print { display:none !important; } html,body{background:#fff!important} }
+    </style>
   </head>
-  <body class="bg-gray-50">
+  <body class="bg-gray-50 text-gray-900 transition-colors" id="body">
     <div id="root"></div>
 
-    <!-- React 18 UMD (no build tools needed) -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 
@@ -17,419 +20,247 @@
       const { useEffect, useMemo, useState } = React;
 
       const todayISO = () => new Date().toISOString().slice(0, 10);
-      const nowHM = () => {
-        const d = new Date();
-        const h = String(d.getHours()).padStart(2, "0");
-        const m = String(d.getMinutes()).padStart(2, "0");
-        return `${h}:${m}`;
+      const pad = (n) => String(n).padStart(2, '0');
+      const addDaysISO = (iso, delta) => { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate()+delta); return d.toISOString().slice(0,10); };
+      const nowHM = () => { const d = new Date(); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+      function minsBetween(start, end){ if(!start||!end) return 0; const [sh,sm]=start.split(':').map(Number); const [eh,em]=end.split(':').map(Number); let m1=sh*60+sm, m2=eh*60+em; if(m2<m1) m2+=24*60; return Math.max(0,m2-m1); }
+
+      const STORAGE_KEY = "twinsDailyLog.v3";
+      const STORAGE_PROFILES = "twinsDailyLog.profiles";
+
+      const STR = {
+        en: { headerTag:"Twins Daily Log", sub:"Quick, offline-friendly tracker for Twin A & Twin B — feeds, diapers, sleep, notes.",
+          print:"Print", export:"Export CSV", clear:"Clear Day", addEntry:"Add Entry", saveChanges:"Save Changes", cancel:"Cancel",
+          duplicate:"Duplicate for other twin", addEntryTitle:"Add Entry",
+          date:"Date", time:"Time", twin:"Twin", childName:"Child name", diaper:"Diaper (W/S/B)",
+          feedType:"Feed Type", feedOz:"Feed Oz", feedMin:"Feed Minutes", pumpOz:"Pump Oz (mom)", pumpMin:"Pump Minutes (mom)",
+          sleepStart:"Sleep (start)", sleepEnd:"Sleep (end)", notes:"Notes",
+          entriesFor:"Entries for", noneYet:"No entries yet. Use the form above to add your first entry.",
+          tableHeaders:["Time","Twin / Name","Feed (type/oz/min)","Pump (oz/min)","Diaper","Sleep (start–end)","Notes",""],
+          totals:"Totals", fed:"Fed (oz)", pumped:"Pumped (oz)", diapers:"Diapers", wet:"W", soiled:"S", both:"B", sleep:"Sleep (hh:mm)",
+          prev:"Prev", next:"Next", dark:"Dark", light:"Light", lang:"ES", edit:"Edit", del:"Delete",
+          names:"Names", aLabel:"Twin A name", bLabel:"Twin B name",
+          confirmClear:(d)=>`Clear all entries for ${d}?`, confirmDelete:"Delete this entry?"
+        },
+        es: { headerTag:"Registro Diario de Gemelos", sub:"Seguimiento rápido y sin conexión — tomas, pañales, sueño y notas.",
+          print:"Imprimir", export:"Exportar CSV", clear:"Borrar día", addEntry:"Agregar registro", saveChanges:"Guardar cambios", cancel:"Cancelar",
+          duplicate:"Duplicar para el otro bebé", addEntryTitle:"Agregar registro",
+          date:"Fecha", time:"Hora", twin:"Bebé", childName:"Nombre", diaper:"Pañal (M/S/A)",
+          feedType:"Tipo de toma", feedOz:"Onzas tomadas", feedMin:"Minutos de toma", pumpOz:"Onzas extraídas (mamá)", pumpMin:"Minutos extracción (mamá)",
+          sleepStart:"Sueño (inicio)", sleepEnd:"Sueño (fin)", notes:"Notas",
+          entriesFor:"Registros para", noneYet:"Sin registros aún. Usa el formulario para agregar el primero.",
+          tableHeaders:["Hora","Bebé / Nombre","Toma (tipo/oz/min)","Extracción (oz/min)","Pañal","Sueño (inicio–fin)","Notas",""],
+          totals:"Totales", fed:"Tomado (oz)", pumped:"Extraído (oz)", diapers:"Pañales", wet:"M", soiled:"S", both:"A", sleep:"Sueño (hh:mm)",
+          prev:"Ant.", next:"Sig.", dark:"Oscuro", light:"Claro", lang:"EN", edit:"Editar", del:"Eliminar",
+          names:"Nombres", aLabel:"Nombre Bebé A", bLabel:"Nombre Bebé B",
+          confirmClear:(d)=>`¿Borrar todos los registros de ${d}?`, confirmDelete:"¿Eliminar este registro?"
+        }
       };
 
-      const STORAGE_KEY = "twinsDailyLog.v1";
-
-      function App() {
-        const [entries, setEntries] = useState(() => {
-          try {
-            const raw = localStorage.getItem(STORAGE_KEY);
-            return raw ? JSON.parse(raw) : [];
-          } catch {
-            return [];
-          }
-        });
-
+      function App(){
+        const [entries, setEntries] = useState(()=>{ try{ const raw=localStorage.getItem(STORAGE_KEY); return raw?JSON.parse(raw):[]; } catch { return []; } });
         const [dateFilter, setDateFilter] = useState(todayISO());
-        const [form, setForm] = useState({
-          date: todayISO(),
-          time: nowHM(),
-          twin: "A",
-          feedType: "",
-          feedOz: "",
-          feedMin: "",
-          pumpOz: "",
-          pumpMin: "",
-          diaper: "",
-          sleepStart: "",
-          sleepEnd: "",
-          notes: "",
+        const [editingId, setEditingId] = useState(null);
+        const [darkMode, setDarkMode] = useState(false);
+        const [lang, setLang] = useState("en");
+
+        const [profiles, setProfiles] = useState(()=>{
+          try{ const raw=localStorage.getItem(STORAGE_PROFILES); return raw?JSON.parse(raw):{A:"Twin A", B:"Twin B"}; } catch { return {A:"Twin A", B:"Twin B"}; }
         });
 
-        useEffect(() => {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-        }, [entries]);
+        const [form, setForm] = useState({
+          date: todayISO(), time: nowHM(), twin: "A", childName: "Twin A",
+          feedType:"", feedOz:"", feedMin:"", pumpOz:"", pumpMin:"", diaper:"", sleepStart:"", sleepEnd:"", notes:""
+        });
 
-        const dayEntries = useMemo(
-          () =>
-            entries
-              .filter((e) => e.date === dateFilter)
-              .sort((a, b) => (a.time || "").localeCompare(b.time || "")),
-          [entries, dateFilter]
-        );
+        const T = STR[lang];
 
-        const resetForm = () =>
-          setForm({
-            ...form,
-            time: nowHM(),
-            feedType: "",
-            feedOz: "",
-            feedMin: "",
-            pumpOz: "",
-            pumpMin: "",
-            diaper: "",
-            sleepStart: "",
-            sleepEnd: "",
-            notes: "",
-          });
+        useEffect(()=>{ localStorage.setItem(STORAGE_KEY, JSON.stringify(entries)); },[entries]);
+        useEffect(()=>{ localStorage.setItem(STORAGE_PROFILES, JSON.stringify(profiles)); },[profiles]);
 
-        const addEntry = () => {
+        useEffect(()=>{
+          const body=document.getElementById('body');
+          if(darkMode){ body.classList.add('bg-gray-900','text-gray-100'); body.classList.remove('bg-gray-50','text-gray-900'); document.querySelector('meta[name="theme-color"]').setAttribute('content','#111111'); }
+          else { body.classList.add('bg-gray-50','text-gray-900'); body.classList.remove('bg-gray-900','text-gray-100'); document.querySelector('meta[name="theme-color"]').setAttribute('content','#ffffff'); }
+        },[darkMode]);
+
+        const dayEntries = useMemo(()=> entries.filter(e=>e.date===dateFilter).sort((a,b)=>(a.time||"").localeCompare(b.time||"")), [entries, dateFilter]);
+
+        const totals = useMemo(()=>{
+          let fedOz=0,pumpOz=0,wet=0,soiled=0,both=0,sleepMin=0;
+          for(const e of dayEntries){
+            if(e.feedOz!=null) fedOz += Number(e.feedOz)||0;
+            if(e.pumpOz!=null) pumpOz += Number(e.pumpOz)||0;
+            if(e.diaper==="W"||e.diaper==="M") wet++;
+            if(e.diaper==="S") soiled++;
+            if(e.diaper==="B"||e.diaper==="A") both++;
+            sleepMin += minsBetween(e.sleepStart, e.sleepEnd);
+          }
+          const hh=Math.floor(sleepMin/60), mm=pad(sleepMin%60);
+          return { fedOz:fedOz, pumpOz:pumpOz, wet, soiled, both, sleepHHMM:`${pad(hh)}:${mm}` };
+        },[dayEntries]);
+
+        const inputClass = "border rounded-lg px-3 py-2 text-sm w-full " + (darkMode ? "bg-gray-800 border-gray-700 text-gray-100" : "");
+        const btnBase = "px-3 py-2 rounded-lg border text-sm"; const btnHover = darkMode ? " hover:bg-gray-800 border-gray-700" : " hover:bg-gray-100";
+        const Field = ({label,children}) => React.createElement("div",{className:"flex flex-col gap-1"}, React.createElement("span",{className:"text-xs "+(darkMode?"text-gray-300":"text-gray-500")},label), children );
+
+        const resetForm = () => setForm({
+          date: dateFilter, time: nowHM(), twin: form.twin || "A", childName: profiles[form.twin||"A"] || "",
+          feedType:"", feedOz:"", feedMin:"", pumpOz:"", pumpMin:"", diaper:"", sleepStart:"", sleepEnd:"", notes:""
+        });
+
+        const setTwin = (t) => setForm(f=>({...f, twin:t, childName: profiles[t] || "" }));
+
+        const addOrSave = () => {
           const clean = {
-            id: crypto.randomUUID(),
-            ...form,
-            feedOz: form.feedOz === "" ? null : Number(form.feedOz),
-            feedMin: form.feedMin === "" ? null : Number(form.feedMin),
-            pumpOz: form.pumpOz === "" ? null : Number(form.pumpOz),
-            pumpMin: form.pumpMin === "" ? null : Number(form.pumpMin),
+            id: editingId || crypto.randomUUID(),
+            date: form.date || dateFilter, time: form.time || nowHM(),
+            twin: form.twin, childName: form.childName || profiles[form.twin] || form.twin,
+            feedType: form.feedType || "", feedOz: form.feedOz===""?null:Number(form.feedOz),
+            feedMin: form.feedMin===""?null:Number(form.feedMin),
+            pumpOz: form.pumpOz===""?null:Number(form.pumpOz),
+            pumpMin: form.pumpMin===""?null:Number(form.pumpMin),
+            diaper: form.diaper || "", sleepStart: form.sleepStart || "", sleepEnd: form.sleepEnd || "", notes: form.notes || ""
           };
-          setEntries((prev) => [...prev, clean]);
+          setEntries(prev => editingId ? prev.map(e=>e.id===editingId?clean:e) : [...prev, clean]);
+          setEditingId(null);
           resetForm();
         };
 
-        const duplicateForOtherTwin = () => {
-          const t = form.twin === "A" ? "B" : "A";
-          setForm({ ...form, twin: t });
+        const startEdit = (e) => {
+          setEditingId(e.id);
+          setForm({
+            date:e.date, time:e.time||nowHM(), twin:e.twin||"A", childName:e.childName||profiles[e.twin]||"",
+            feedType:e.feedType||"", feedOz:e.feedOz??"", feedMin:e.feedMin??"", pumpOz:e.pumpOz??"", pumpMin:e.pumpMin??"",
+            diaper:e.diaper||"", sleepStart:e.sleepStart||"", sleepEnd:e.sleepEnd||"", notes:e.notes||""
+          });
         };
 
+        const cancelEdit = () => { setEditingId(null); resetForm(); };
+        const deleteEntry = (id) => { if(!confirm(T.confirmDelete)) return; setEntries(prev=>prev.filter(e=>e.id!==id)); };
         const exportCSV = () => {
-          const header = [
-            "Date","Time","Twin","FeedType","FeedOz","FeedMin","PumpOz","PumpMin","Diaper(W/S/B)","SleepStart","SleepEnd","Notes",
-          ];
-          const rows = dayEntries.map((e) => [
-            e.date, e.time||"", e.twin, e.feedType||"", e.feedOz ?? "", e.feedMin ?? "",
-            e.pumpOz ?? "", e.pumpMin ?? "", e.diaper||"", e.sleepStart||"", e.sleepEnd||"",
-            (e.notes||"").replace(/\n/g," ")
-          ]);
-          const csv = [header, ...rows]
-            .map(r => r.map(cell =>
-              (typeof cell === "string" && (cell.includes(",") || cell.includes('"')))
-                ? '"' + cell.replaceAll('"','""') + '"'
-                : cell
-            ).join(","))
-            .join("\n");
-          const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `twins-log-${dateFilter}.csv`;
-          a.click();
-          URL.revokeObjectURL(url);
+          const header = ["Date","Time","TwinId","ChildName","FeedType","FeedOz","FeedMin","PumpOz","PumpMin","Diaper(W/S/B)","SleepStart","SleepEnd","Notes"];
+          const rows = dayEntries.map(e=>[e.date,e.time||"",e.twin,e.childName||profiles[e.twin]||e.twin,e.feedType||"",e.feedOz??"",e.feedMin??"",e.pumpOz??"",e.pumpMin??"",e.diaper||"",e.sleepStart||"",e.sleepEnd||"", (e.notes||"").replace(/\n/g," ")]);
+          const csv = [header,...rows].map(r=>r.map(cell=> (typeof cell==="string" && (cell.includes(",")||cell.includes('"')))?'"'+cell.replaceAll('"','""')+'"':cell).join(",")).join("\n");
+          const blob = new Blob([csv],{type:"text/csv;charset=utf-8;"}); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download=`twins-log-${dateFilter}.csv`; a.click(); URL.revokeObjectURL(url);
         };
+        const clearDay = () => { if(!confirm(T.confirmClear(dateFilter))) return; setEntries(entries.filter(e=>e.date!==dateFilter)); };
 
-        const clearDay = () => {
-          if (!confirm(`Clear all entries for ${dateFilter}?`)) return;
-          setEntries(entries.filter(e => e.date !== dateFilter));
-        };
+        return React.createElement("div",{className:"min-h-screen "+(darkMode?"bg-gray-900 text-gray-100":"bg-gray-50 text-gray-900")},
+          React.createElement("div",{className:"max-w-6xl mx-auto p-4 md:p-8"},
 
-        const Field = ({ label, children }) =>
-          React.createElement(
-            "div",
-            { className: "flex flex-col gap-1" },
-            React.createElement("span", { className: "text-xs text-gray-500" }, label),
-            children
-          );
-
-        return React.createElement(
-          "div",
-          { className: "min-h-screen bg-gray-50 text-gray-900" },
-          React.createElement(
-            "div",
-            { className: "max-w-5xl mx-auto p-4 md:p-8" },
-            React.createElement(
-              "header",
-              { className: "mb-4 flex flex-col md:flex-row md:items-end gap-3 md:gap-6" },
-              React.createElement(
-                "div",
-                { className: "flex-1" },
-                React.createElement("h1", { className: "text-2xl md:text-3xl font-semibold" }, "Twins Daily Log"),
-                React.createElement(
-                  "p",
-                  { className: "text-sm text-gray-600" },
-                  "Quick, offline-friendly tracker for Twin A & Twin B — feeds, diapers, sleep, notes."
-                )
+            React.createElement("header",{className:"mb-4 flex flex-col md:flex-row md:items-end gap-3 md:gap-6"},
+              React.createElement("div",{className:"flex-1"},
+                React.createElement("h1",{className:"text-2xl md:text-3xl font-semibold"}, STR[lang].headerTag),
+                React.createElement("p",{className:"text-sm "+(darkMode?"text-gray-300":"text-gray-600")}, STR[lang].sub)
               ),
-              React.createElement(
-                "div",
-                { className: "flex items-center gap-2" },
-                React.createElement("input", {
-                  type: "date",
-                  className: "border rounded-lg px-3 py-2 text-sm",
-                  value: dateFilter,
-                  onChange: (e) => setDateFilter(e.target.value),
-                }),
-                React.createElement(
-                  "button",
-                  { onClick: () => window.print(), className: "px-3 py-2 rounded-lg border text-sm hover:bg-gray-100" },
-                  "Print"
-                ),
-                React.createElement(
-                  "button",
-                  { onClick: exportCSV, className: "px-3 py-2 rounded-lg border text-sm hover:bg-gray-100" },
-                  "Export CSV"
-                ),
-                React.createElement(
-                  "button",
-                  { onClick: clearDay, className: "px-3 py-2 rounded-lg border text-sm hover:bg-red-50" },
-                  "Clear Day"
-                )
+              React.createElement("div",{className:"flex items-center gap-2"},
+                React.createElement("button",{onClick:()=>setDateFilter(addDaysISO(dateFilter,-1)), className:btnBase+btnHover}, STR[lang].prev),
+                React.createElement("input",{type:"date", className:inputClass+" w-[11.5rem]", value:dateFilter, onChange:e=>setDateFilter(e.target.value)}),
+                React.createElement("button",{onClick:()=>setDateFilter(addDaysISO(dateFilter,+1)), className:btnBase+btnHover}, STR[lang].next),
+                React.createElement("button",{onClick:()=>window.print(), className:btnBase+btnHover}, STR[lang].print),
+                React.createElement("button",{onClick:exportCSV, className:btnBase+btnHover}, STR[lang].export),
+                React.createElement("button",{onClick:clearDay, className:btnBase+(darkMode?" hover:bg-gray-800":" hover:bg-red-50")}, STR[lang].clear)
+              ),
+              React.createElement("div",{className:"flex items-center gap-2"},
+                React.createElement("button",{onClick:()=>setLang(lang==='en'?'es':'en'), className:btnBase+btnHover}, STR[lang].lang),
+                React.createElement("button",{onClick:()=>setDarkMode(!darkMode), className:btnBase+btnHover}, darkMode?STR[lang].light:STR[lang].dark)
               )
             ),
 
-            React.createElement(
-              "section",
-              { className: "bg-white rounded-2xl shadow-sm border p-4 md:p-6 mb-6" },
-              React.createElement("h2", { className: "text-lg font-medium mb-3" }, "Add Entry"),
-              React.createElement(
-                "div",
-                { className: "grid grid-cols-2 md:grid-cols-4 gap-3" },
-                React.createElement(
-                  Field,
-                  { label: "Date" },
-                  React.createElement("input", {
-                    type: "date",
-                    value: form.date,
-                    onChange: (e) => setForm({ ...form, date: e.target.value }),
-                    className: "border rounded-lg px-3 py-2 text-sm w-full",
-                  })
-                ),
-                React.createElement(
-                  Field,
-                  { label: "Time" },
-                  React.createElement("input", {
-                    type: "time",
-                    value: form.time,
-                    onChange: (e) => setForm({ ...form, time: e.target.value }),
-                    className: "border rounded-lg px-3 py-2 text-sm w-full",
-                  })
-                ),
-                React.createElement(
-                  Field,
-                  { label: "Twin" },
-                  React.createElement(
-                    "div",
-                    { className: "flex gap-2" },
-                    ["A", "B"].map((t) =>
-                      React.createElement(
-                        "button",
-                        {
-                          key: t,
-                          onClick: () => setForm({ ...form, twin: t }),
-                          className:
-                            "px-3 py-2 rounded-lg border text-sm w-full " +
-                            (form.twin === t ? "bg-gray-900 text-white" : "hover:bg-gray-100"),
-                        },
-                        t
-                      )
-                    )
-                  )
-                ),
-                React.createElement(
-                  Field,
-                  { label: "Diaper (W/S/B)" },
-                  React.createElement(
-                    "div",
-                    { className: "flex gap-2" },
-                    ["", "W", "S", "B"].map((d) =>
-                      React.createElement(
-                        "button",
-                        {
-                          key: d || "None",
-                          onClick: () => setForm({ ...form, diaper: d }),
-                          className:
-                            "px-3 py-2 rounded-lg border text-sm w-full " +
-                            (form.diaper === d ? "bg-gray-900 text-white" : "hover:bg-gray-100"),
-                        },
-                        d || "—"
-                      )
-                    )
-                  )
-                ),
-                React.createElement(
-                  Field,
-                  { label: "Feed Type" },
-                  React.createElement(
-                    "select",
-                    {
-                      value: form.feedType,
-                      onChange: (e) => setForm({ ...form, feedType: e.target.value }),
-                      className: "border rounded-lg px-3 py-2 text-sm w-full",
-                    },
-                    React.createElement("option", { value: "" }, "—"),
-                    React.createElement("option", null, "breast"),
-                    React.createElement("option", null, "formula"),
-                    React.createElement("option", null, "pumped"),
-                    React.createElement("option", null, "other")
-                  )
-                ),
-                React.createElement(
-                  Field,
-                  { label: "Feed Oz" },
-                  React.createElement("input", {
-                    type: "number",
-                    min: "0",
-                    step: "0.5",
-                    value: form.feedOz,
-                    onChange: (e) => setForm({ ...form, feedOz: e.target.value }),
-                    className: "border rounded-lg px-3 py-2 text-sm w-full",
-                  })
-                ),
-                React.createElement(
-                  Field,
-                  { label: "Feed Minutes" },
-                  React.createElement("input", {
-                    type: "number",
-                    min: "0",
-                    step: "1",
-                    value: form.feedMin,
-                    onChange: (e) => setForm({ ...form, feedMin: e.target.value }),
-                    className: "border rounded-lg px-3 py-2 text-sm w-full",
-                  })
-                ),
-                React.createElement(
-                  Field,
-                  { label: "Pump Oz (mom)" },
-                  React.createElement("input", {
-                    type: "number",
-                    min: "0",
-                    step: "0.5",
-                    value: form.pumpOz,
-                    onChange: (e) => setForm({ ...form, pumpOz: e.target.value }),
-                    className: "border rounded-lg px-3 py-2 text-sm w-full",
-                  })
-                ),
-                React.createElement(
-                  Field,
-                  { label: "Pump Minutes (mom)" },
-                  React.createElement("input", {
-                    type: "number",
-                    min: "0",
-                    step: "1",
-                    value: form.pumpMin,
-                    onChange: (e) => setForm({ ...form, pumpMin: e.target.value }),
-                    className: "border rounded-lg px-3 py-2 text-sm w-full",
-                  })
-                ),
-                React.createElement(
-                  Field,
-                  { label: "Sleep (start)" },
-                  React.createElement("input", {
-                    type: "time",
-                    value: form.sleepStart,
-                    onChange: (e) => setForm({ ...form, sleepStart: e.target.value }),
-                    className: "border rounded-lg px-3 py-2 text-sm w-full",
-                  })
-                ),
-                React.createElement(
-                  Field,
-                  { label: "Sleep (end)" },
-                  React.createElement("input", {
-                    type: "time",
-                    value: form.sleepEnd,
-                    onChange: (e) => setForm({ ...form, sleepEnd: e.target.value }),
-                    className: "border rounded-lg px-3 py-2 text-sm w-full",
-                  })
-                ),
-                React.createElement(
-                  Field,
-                  { label: "Notes" },
-                  React.createElement("textarea", {
-                    rows: 2,
-                    value: form.notes,
-                    onChange: (e) => setForm({ ...form, notes: e.target.value }),
-                    className: "border rounded-lg px-3 py-2 text-sm w-full",
-                    placeholder: "Reflux, meds, soothing, temp, etc.",
-                  })
+            React.createElement("section",{className:(darkMode?"bg-gray-800 border-gray-700":"bg-white")+" rounded-2xl shadow-sm border p-4 md:p-6 mb-6"},
+              React.createElement("div",{className:"flex items-center justify-between mb-3"},
+                React.createElement("h2",{className:"text-lg font-medium"}, STR[lang].totals),
+                React.createElement("div",{className:"flex items-center gap-2"},
+                  React.createElement("span",{className:"text-sm "+(darkMode?"text-gray-300":"text-gray-600")}, STR[lang].names),
+                  React.createElement("input",{type:"text", value:profiles.A, onChange:e=>setProfiles(p=>({...p,A:e.target.value})), placeholder:STR[lang].aLabel, className:inputClass+" w-36"}),
+                  React.createElement("input",{type:"text", value:profiles.B, onChange:e=>setProfiles(p=>({...p,B:e.target.value})), placeholder:STR[lang].bLabel, className:inputClass+" w-36"})
                 )
               ),
-              React.createElement(
-                "div",
-                { className: "mt-4 flex flex-col md:flex-row gap-2" },
-                React.createElement(
-                  "button",
-                  { onClick: addEntry, className: "px-4 py-2 rounded-xl bg-gray-900 text-white text-sm" },
-                  "Add Entry"
-                ),
-                React.createElement(
-                  "button",
-                  { onClick: duplicateForOtherTwin, className: "px-4 py-2 rounded-xl border text-sm" },
-                  "Duplicate for other twin"
-                )
+              React.createElement("div",{className:"grid grid-cols-2 md:grid-cols-6 gap-3 text-sm"},
+                (()=>{
+                  const T=STR[lang];
+                  const blocks=[
+                    [T.fed, (totals.fedOz).toFixed(1)],
+                    [T.pumped, (totals.pumpOz).toFixed(1)],
+                    [T.diapers+" ("+T.wet+")", totals.wet],
+                    [T.diapers+" ("+T.soiled+")", totals.soiled],
+                    [T.diapers+" ("+T.both+")", totals.both],
+                    [T.sleep, totals.sleepHHMM],
+                  ];
+                  return blocks.map(([label,val])=>React.createElement("div",{key:label,className:"p-3 rounded-xl "+(darkMode?"bg-gray-900/40 border border-gray-700":"bg-gray-50")},
+                    React.createElement("div",{className:"text-xs "+(darkMode?"text-gray-300":"text-gray-500")}, label),
+                    React.createElement("div",{className:"text-xl font-semibold"}, String(val))
+                  ));
+                })()
               )
             ),
 
-            React.createElement(
-              "section",
-              { className: "bg-white rounded-2xl shadow-sm border p-4 md:p-6" },
-              React.createElement("h2", { className: "text-lg font-medium mb-3" }, `Entries for ${dateFilter}`),
-              dayEntries.length === 0
-                ? React.createElement("p", { className: "text-sm text-gray-500" }, "No entries yet. Use the form above to add your first entry.")
-                : React.createElement(
-                    "div",
-                    { className: "overflow-x-auto" },
-                    React.createElement(
-                      "table",
-                      { className: "min-w-full text-sm" },
-                      React.createElement(
-                        "thead",
-                        null,
-                        React.createElement(
-                          "tr",
-                          { className: "text-left text-gray-500" },
-                          ["Time","Twin","Feed (type/oz/min)","Pump (oz/min)","Diaper","Sleep (start–end)","Notes"].map((h) =>
-                            React.createElement("th", { key: h, className: "py-2 px-2 border-b" }, h)
-                          )
+            React.createElement("section",{className:(darkMode?"bg-gray-800 border-gray-700":"bg-white")+" rounded-2xl shadow-sm border p-4 md:p-6 mb-6"},
+              React.createElement("h2",{className:"text-lg font-medium mb-3"}, STR[lang].addEntryTitle),
+              React.createElement("div",{className:"grid grid-cols-2 md:grid-cols-4 gap-3"},
+                React.createElement(Field,{label:STR[lang].date}, React.createElement("input",{type:"date", value:form.date, onChange:e=>setForm({...form,date:e.target.value}), className:inputClass})),
+                React.createElement(Field,{label:STR[lang].time}, React.createElement("input",{type:"time", value:form.time, onChange:e=>setForm({...form,time:e.target.value}), className:inputClass})),
+                React.createElement(Field,{label:STR[lang].twin}, React.createElement("div",{className:"flex gap-2"},
+                  ["A","B"].map(t=>React.createElement("button",{key:t, onClick:()=>setTwin(t), className:"px-3 py-2 rounded-lg border text-sm w-full "+(form.twin===t?(darkMode?"bg-gray-100 text-gray-900":"bg-gray-900 text-white"):btnHover+(darkMode?" border-gray-700":""))}, (profiles[t]||t)))
+                )),
+                React.createElement(Field,{label:STR[lang].childName}, React.createElement("input",{type:"text", value:form.childName, onChange:e=>setForm({...form, childName:e.target.value}), className:inputClass, placeholder: profiles[form.twin]||"" })),
+                React.createElement(Field,{label:STR[lang].diaper}, React.createElement("div",{className:"flex gap-2"}, ["","W","S","B"].map(d=>React.createElement("button",{key:d||"None", onClick:()=>setForm({...form,diaper:d}), className:"px-3 py-2 rounded-lg border text-sm w-full "+(form.diaper===d?(darkMode?"bg-gray-100 text-gray-900":"bg-gray-900 text-white"):btnHover+(darkMode?" border-gray-700":""))}, d||"—")))),
+                React.createElement(Field,{label:STR[lang].feedType}, React.createElement("select",{value:form.feedType, onChange:e=>setForm({...form,feedType:e.target.value}), className:inputClass},
+                  React.createElement("option",{value:""},"—"),
+                  React.createElement("option",{value:"breast"},"breast"),
+                  React.createElement("option",{value:"formula"},"formula"),
+                  React.createElement("option",{value:"pumped"},"pumped"),
+                  React.createElement("option",{value:"other"},"other"),
+                )),
+                React.createElement(Field,{label:STR[lang].feedOz}, React.createElement("input",{type:"number", min:"0", step:"0.5", value:form.feedOz, onChange:e=>setForm({...form,feedOz:e.target.value}), className:inputClass})),
+                React.createElement(Field,{label:STR[lang].feedMin}, React.createElement("input",{type:"number", min:"0", step:"1", value:form.feedMin, onChange:e=>setForm({...form,feedMin:e.target.value}), className:inputClass})),
+                React.createElement(Field,{label:STR[lang].pumpOz}, React.createElement("input",{type:"number", min:"0", step:"0.5", value:form.pumpOz, onChange:e=>setForm({...form,pumpOz:e.target.value}), className:inputClass})),
+                React.createElement(Field,{label:STR[lang].pumpMin}, React.createElement("input",{type:"number", min:"0", step:"1", value:form.pumpMin, onChange:e=>setForm({...form,pumpMin:e.target.value}), className:inputClass})),
+                React.createElement(Field,{label:STR[lang].sleepStart}, React.createElement("input",{type:"time", value:form.sleepStart, onChange:e=>setForm({...form,sleepStart:e.target.value}), className:inputClass})),
+                React.createElement(Field,{label:STR[lang].sleepEnd}, React.createElement("input",{type:"time", value:form.sleepEnd, onChange:e=>setForm({...form,sleepEnd:e.target.value}), className:inputClass})),
+                React.createElement(Field,{label:STR[lang].notes}, React.createElement("textarea",{rows:2, value:form.notes, onChange:e=>setForm({...form,notes:e.target.value}), className:inputClass, placeholder: lang==='en'?"Reflux, meds, soothing, temp, etc.":"Reflujo, medicación, calma, temperatura, etc."}))
+              ),
+              React.createElement("div",{className:"mt-4 flex flex-col md:flex-row gap-2"},
+                React.createElement("button",{onClick:addOrSave, className:"px-4 py-2 rounded-xl text-sm "+(darkMode?"bg-gray-100 text-gray-900":"bg-gray-900 text-white")}, editingId?STR[lang].saveChanges:STR[lang].addEntry),
+                editingId && React.createElement("button",{onClick:cancelEdit, className:btnBase+btnHover}, STR[lang].cancel),
+                !editingId && React.createElement("button",{onClick:()=>setForm(f=>({...f, twin:f.twin==='A'?'B':'A', childName: profiles[f.twin==='A'?'B':'A'] || "" })), className:btnBase+btnHover}, STR[lang].duplicate)
+              )
+            ),
+
+            React.createElement("section",{className:(darkMode?"bg-gray-800 border-gray-700":"bg-white")+" rounded-2xl shadow-sm border p-4 md:p-6"},
+              React.createElement("h2",{className:"text-lg font-medium mb-3"}, `${STR[lang].entriesFor} ${dateFilter}`),
+              dayEntries.length===0
+                ? React.createElement("p",{className:"text-sm "+(darkMode?"text-gray-300":"text-gray-500")}, STR[lang].noneYet)
+                : React.createElement("div",{className:"overflow-x-auto"},
+                    React.createElement("table",{className:"min-w-full text-sm"},
+                      React.createElement("thead",null,
+                        React.createElement("tr",{className:"text-left "+(darkMode?"text-gray-300":"text-gray-500")},
+                          STR[lang].tableHeaders.map(h=>React.createElement("th",{key:h, className:"py-2 px-2 border-b "+(darkMode?"border-gray-700":"")}, h))
                         )
                       ),
-                      React.createElement(
-                        "tbody",
-                        null,
-                        dayEntries.map((e) =>
-                          React.createElement(
-                            "tr",
-                            { key: e.id, className: "border-b last:border-b-0" },
-                            React.createElement("td", { className: "py-2 px-2 whitespace-nowrap" }, e.time || ""),
-                            React.createElement("td", { className: "py-2 px-2" }, e.twin),
-                            React.createElement(
-                              "td",
-                              { className: "py-2 px-2" },
-                              [e.feedType || null, e.feedOz != null ? `${e.feedOz} oz` : null, e.feedMin != null ? `${e.feedMin} min` : null]
-                                .filter(Boolean)
-                                .join(" · ")
-                            ),
-                            React.createElement(
-                              "td",
-                              { className: "py-2 px-2" },
-                              [e.pumpOz != null ? `${e.pumpOz} oz` : null, e.pumpMin != null ? `${e.pumpMin} min` : null]
-                                .filter(Boolean)
-                                .join(" · ")
-                            ),
-                            React.createElement("td", { className: "py-2 px-2" }, e.diaper || ""),
-                            React.createElement(
-                              "td",
-                              { className: "py-2 px-2" },
-                              (e.sleepStart || "") + (e.sleepEnd ? ` – ${e.sleepEnd}` : "")
-                            ),
-                            React.createElement("td", { className: "py-2 px-2 max-w-[28rem]" }, e.notes)
+                      React.createElement("tbody",null,
+                        dayEntries.map(e=>React.createElement("tr",{key:e.id, className:"border-b last:border-b-0 "+(darkMode?"border-gray-700":"")},
+                          React.createElement("td",{className:"py-2 px-2 whitespace-nowrap"}, e.time||""),
+                          React.createElement("td",{className:"py-2 px-2"}, (e.childName||profiles[e.twin]||e.twin) + " ("+e.twin+")"),
+                          React.createElement("td",{className:"py-2 px-2"}, [e.feedType||null, e.feedOz!=null?`${e.feedOz} oz`:null, e.feedMin!=null?`${e.feedMin} min`:null].filter(Boolean).join(" · ")),
+                          React.createElement("td",{className:"py-2 px-2"}, [e.pumpOz!=null?`${e.pumpOz} oz`:null, e.pumpMin!=null?`${e.pumpMin} min`:null].filter(Boolean).join(" · ")),
+                          React.createElement("td",{className:"py-2 px-2"}, e.diaper||""),
+                          React.createElement("td",{className:"py-2 px-2"}, (e.sleepStart||"") + (e.sleepEnd?` – ${e.sleepEnd}`:"")),
+                          React.createElement("td",{className:"py-2 px-2 max-w-[28rem]"}, e.notes),
+                          React.createElement("td",{className:"py-2 px-2 whitespace-nowrap text-right"},
+                            React.createElement("button",{onClick:()=>startEdit(e), className:"mr-2 "+btnBase+btnHover}, STR[lang].edit),
+                            React.createElement("button",{onClick:()=>deleteEntry(e.id), className:btnBase+btnHover}, STR[lang].del)
                           )
-                        )
+                        ))
                       )
                     )
                   )
             ),
 
-            React.createElement(
-              "footer",
-              { className: "text-xs text-gray-500 mt-6" },
-              "Local-only prototype. Data stays in your browser (LocalStorage). Export CSV to back up. — Zeal"
-            )
+            React.createElement("footer",{className:"text-xs "+(darkMode?"text-gray-400":"text-gray-500")+" mt-6"}, "Local-only prototype. Data stays in your browser (LocalStorage). Export CSV to back up. — Zeal")
           )
-        );
+        ));
       }
 
       ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
